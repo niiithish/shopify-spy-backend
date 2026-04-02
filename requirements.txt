@@ -1,0 +1,2 @@
+# No Python packages needed - uses agent-browser CLI
+# Install agent-browser with: agent-browser install
