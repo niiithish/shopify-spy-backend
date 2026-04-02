@@ -1,6 +1,7 @@
 """
 Shopify App Store Scraper using agent-browser
 Uses agent-browser CLI for reliable extraction
+Phase 2: Added relevance filtering
 """
 
 import json
@@ -8,15 +9,188 @@ import re
 import subprocess
 import sys
 from urllib.parse import quote
+from typing import List, Dict, Tuple
+
+
+class RelevanceScorer:
+    """
+    Phase 2: Relevance scoring system for filtering apps based on search query.
+    Uses keyword matching and semantic similarity without ML libraries.
+    """
+
+    # Keyword expansion map - related terms that should match
+    KEYWORD_MAP = {
+        # Price related
+        "price": ["price", "pricing", "cost", "fee", "rate"],
+        "monitor": ["monitor", "monitoring", "track", "tracking", "watch", "watching"],
+        "competitor": ["competitor", "competition", "competitive", "rival", "market"],
+        "dynamic": ["dynamic", "automated", "auto", "smart", "intelligent"],
+        "compare": ["compare", "comparison", "benchmark", "versus", "vs"],
+        # Email related
+        "email": ["email", "mail", "newsletter", "campaign"],
+        "marketing": ["marketing", "promotion", "advertising", "outreach"],
+        # Order related
+        "order": ["order", "tracking", "shipment", "shipping", "delivery"],
+        "track": ["track", "tracking", "trace", "status", "locate"],
+        # Review related
+        "review": ["review", "feedback", "rating", "testimonial"],
+        # Inventory
+        "inventory": ["inventory", "stock", "warehouse", "supply"],
+        # SEO
+        "seo": ["seo", "search", "ranking", "optimize", "optimization"],
+    }
+
+    # Weights for different parts of the app data
+    WEIGHTS = {
+        "title": 3.0,      # Title match is most important
+        "description": 1.5,  # Description/subtitle match
+        "category": 1.0,   # Category hint match
+    }
+
+    def __init__(self, query: str):
+        """
+        Initialize scorer with search query
+
+        Args:
+            query: Original search query
+        """
+        self.original_query = query.lower().strip()
+        self.keywords = self._extract_keywords(query)
+        print(f"🎯 Phase 2: Expanded keywords for '{query}': {self.keywords}")
+
+    def _extract_keywords(self, query: str) -> List[str]:
+        """
+        Extract and expand keywords from query
+
+        Args:
+            query: Search query
+
+        Returns:
+            List of relevant keywords including synonyms
+        """
+        query_lower = query.lower().strip()
+        words = re.findall(r'\b\w+\b', query_lower)
+
+        keywords = set()
+        for word in words:
+            keywords.add(word)
+            # Add related terms from keyword map
+            for key, related in self.KEYWORD_MAP.items():
+                if word == key or word in related:
+                    keywords.update(related)
+
+        return list(keywords)
+
+    def _calculate_text_score(self, text: str) -> float:
+        """
+        Calculate relevance score for a text string
+
+        Args:
+            text: Text to score
+
+        Returns:
+            Score between 0 and 1
+        """
+        if not text:
+            return 0.0
+
+        text_lower = text.lower()
+        text_words = set(re.findall(r'\b\w+\b', text_lower))
+
+        if not text_words:
+            return 0.0
+
+        # Count matching keywords
+        matches = sum(1 for keyword in self.keywords if keyword in text_lower)
+
+        # Calculate score based on matches and text coverage
+        if matches == 0:
+            return 0.0
+
+        # Score formula: matches / total unique keywords, capped at 1.0
+        score = min(matches / len(self.keywords), 1.0)
+
+        # Boost score if exact phrase appears
+        if self.original_query in text_lower:
+            score = min(score + 0.3, 1.0)
+
+        return score
+
+    def score_app(self, app: Dict) -> float:
+        """
+        Calculate overall relevance score for an app
+
+        Args:
+            app: App dictionary with title, price, etc.
+
+        Returns:
+            Relevance score between 0 and 100
+        """
+        # Combine title and price (description) for scoring
+        title = app.get("title", "")
+        description = app.get("price", "")  # The 'price' field contains the subtitle/description
+
+        title_score = self._calculate_text_score(title) * self.WEIGHTS["title"]
+        desc_score = self._calculate_text_score(description) * self.WEIGHTS["description"]
+
+        # Normalize by total weight
+        total_weight = self.WEIGHTS["title"] + self.WEIGHTS["description"]
+        final_score = ((title_score + desc_score) / total_weight) * 100
+
+        return round(final_score, 1)
+
+    def filter_and_sort(
+        self,
+        apps: List[Dict],
+        threshold: float = 30.0,
+        min_results: int = 5
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """
+        Filter and sort apps by relevance
+
+        Args:
+            apps: List of app dictionaries
+            threshold: Minimum relevance score to keep (0-100)
+            min_results: Minimum number of results to return regardless of threshold
+
+        Returns:
+            Tuple of (filtered_sorted_apps, all_scored_apps)
+        """
+        # Score all apps
+        scored_apps = []
+        for app in apps:
+            score = self.score_app(app)
+            app["relevance_score"] = score
+            scored_apps.append(app)
+
+        # Sort by relevance score (descending)
+        scored_apps.sort(key=lambda x: x["relevance_score"], reverse=True)
+
+        # Filter: keep apps above threshold, but ensure at least min_results
+        filtered = [app for app in scored_apps if app["relevance_score"] >= threshold]
+
+        if len(filtered) < min_results and len(scored_apps) >= min_results:
+            # If filtering removed too many, keep top min_results
+            filtered = scored_apps[:min_results]
+
+        return filtered, scored_apps
 
 
 class ShopifyAgentScraper:
-    """Scraper using agent-browser CLI"""
+    """Scraper using agent-browser CLI with Phase 2 relevance filtering"""
 
     BASE_URL = "https://apps.shopify.com"
 
-    def __init__(self, wait_seconds=5):
+    def __init__(self, wait_seconds=5, relevance_threshold=30.0):
+        """
+        Initialize scraper
+
+        Args:
+            wait_seconds: Seconds to wait for page load
+            relevance_threshold: Minimum relevance score (0-100) to keep an app
+        """
         self.wait_seconds = wait_seconds
+        self.relevance_threshold = relevance_threshold
 
     def run_command(self, cmd: str) -> str:
         """Run agent-browser command and return output"""
@@ -53,14 +227,16 @@ class ShopifyAgentScraper:
         print(f"⏳ Running agent-browser (this may take {self.wait_seconds + 5}s)...")
         output = self.run_command(cmd)
 
-        # Parse the snapshot output
-        apps, all_links = self.parse_snapshot(output)
+        try:
+            # Parse the snapshot output
+            apps, all_links = self.parse_snapshot(output)
 
-        # Get actual URLs for each app using the link refs
-        apps = self._get_app_urls(apps, all_links)
-
-        # Close browser
-        self.run_command("agent-browser close")
+            # Get actual URLs for each app using the link refs
+            apps = self._get_app_urls(apps, all_links)
+        finally:
+            # Always close browser, even if an error occurs
+            print("🛑 Closing agent-browser...")
+            self.run_command("agent-browser close")
 
         return apps
 
@@ -238,24 +414,52 @@ class ShopifyAgentScraper:
             "link_ref": None,
         }
 
-    def scrape(self, keyword: str, save_to_file: str = None):
+    def scrape(self, keyword: str, save_to_file: str = None, filter_results: bool = True):
         """
-        Main scraping method
+        Main scraping method with Phase 2 relevance filtering
 
         Args:
             keyword: Search term
             save_to_file: Optional JSON file to save results
+            filter_results: Whether to apply relevance filtering (Phase 2)
 
         Returns:
             List of app dictionaries
         """
         apps = self.search_and_extract(keyword)
 
-        print(f"\n📊 Found {len(apps)} apps for keyword: '{keyword}'\n")
+        print(f"\n📊 Found {len(apps)} raw apps for keyword: '{keyword}'")
+
+        # Phase 2: Apply relevance filtering
+        if filter_results and apps:
+            scorer = RelevanceScorer(keyword)
+            filtered_apps, all_scored = scorer.filter_and_sort(
+                apps,
+                threshold=self.relevance_threshold,
+                min_results=5
+            )
+
+            removed_count = len(apps) - len(filtered_apps)
+            print(f"🎯 Phase 2: Filtered out {removed_count} low-relevance apps")
+            print(f"✅ Keeping {len(filtered_apps)} relevant apps\n")
+
+            apps = filtered_apps
+
+            # Save full scored results for reference
+            if save_to_file:
+                debug_file = save_to_file.replace(".json", "_all_scored.json")
+                with open(debug_file, "w", encoding="utf-8") as f:
+                    json.dump(all_scored, f, indent=2, ensure_ascii=False)
+        else:
+            print()
 
         # Display results
         for i, app in enumerate(apps, 1):
-            print(f"{i}. {app['title']}")
+            print(f"{i}. {app['title']}", end="")
+            if "relevance_score" in app:
+                print(f" (Relevance: {app['relevance_score']}%)")
+            else:
+                print()
             print(f"   URL: {app['url']}")
             if app.get("rating"):
                 print(f"   Rating: {app['rating']} stars")
@@ -275,7 +479,7 @@ class ShopifyAgentScraper:
 
 
 def main():
-    """CLI entry point"""
+    """CLI entry point with Phase 2 relevance filtering"""
     # Get keyword from args or prompt
     if len(sys.argv) > 1:
         keyword = " ".join(sys.argv[1:])
@@ -288,13 +492,13 @@ def main():
         print("❌ Please provide a search keyword")
         return
 
-    # Create scraper and run
-    scraper = ShopifyAgentScraper(wait_seconds=5)
+    # Create scraper with Phase 2 filtering enabled
+    scraper = ShopifyAgentScraper(wait_seconds=5, relevance_threshold=30.0)
 
     output_file = f"shopify_apps_{keyword.replace(' ', '_')}.json"
-    apps = scraper.scrape(keyword, save_to_file=output_file)
+    apps = scraper.scrape(keyword, save_to_file=output_file, filter_results=True)
 
-    print(f"\n✅ Scraping complete! Found {len(apps)} apps.")
+    print(f"\n✅ Phase 2 complete! Found {len(apps)} relevant apps.")
 
 
 if __name__ == "__main__":
