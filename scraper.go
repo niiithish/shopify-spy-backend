@@ -22,15 +22,8 @@ type App struct {
 // AppDetail represents detailed app information
 type AppDetail struct {
 	App
-	Description     string   `json:"description"`
-	Developer       string   `json:"developer"`
-	Launched        string   `json:"launched"`
-	Languages       []string `json:"languages"`
-	Categories      []string `json:"categories"`
-	PositiveReviews int      `json:"positive_reviews"`
-	CriticalReviews int      `json:"critical_reviews"`
-	TotalReviews    int      `json:"total_reviews"`
-	FiveStarPercent string   `json:"five_star_percent"`
+	Launched            string `json:"launched"`
+	RecentReviews30Days int    `json:"recent_reviews_30_days"`
 }
 
 // Scraper handles browser automation via agent-browser CLI
