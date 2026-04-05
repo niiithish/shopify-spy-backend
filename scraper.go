@@ -60,7 +60,7 @@ func (s *Scraper) SearchAndExtract(keyword string) ([]App, error) {
 
 	// Build command chain
 	cmd := fmt.Sprintf(
-		`agent-browser open "%s" && agent-browser wait --load networkidle && agent-browser wait %d000 && agent-browser snapshot -i`,
+		`agent-browser --engine chrome open "%s" && agent-browser wait --load networkidle && agent-browser wait %d000 && agent-browser snapshot -i`,
 		url, s.WaitSeconds,
 	)
 
@@ -76,7 +76,7 @@ func (s *Scraper) SearchAndExtract(keyword string) ([]App, error) {
 	apps = s.getAppURLs(apps, allLinks)
 
 	// Close browser
-	s.runCommand("agent-browser close")
+	s.runCommand("agent-browser --engine chrome close")
 
 	return apps, nil
 }
@@ -224,7 +224,7 @@ func (s *Scraper) getAppURLs(apps []App, allLinks []Link) []App {
 		}
 
 		if linkRef != "" {
-			cmd := fmt.Sprintf("agent-browser get attr @%s href", linkRef)
+			cmd := fmt.Sprintf("agent-browser --engine chrome get attr @%s href", linkRef)
 			result, _ := s.runCommand(cmd)
 			result = strings.TrimSpace(result)
 
