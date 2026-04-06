@@ -45,7 +45,7 @@ func scrapeRecentReviewsCount(appURL string) int {
 	count, hasMore, foundOldReview := scrapeReviewsPage(appURL, 1, cutoffDate)
 	totalCount += count
 	pageCount++
-	
+
 	if foundOldReview {
 		// Found a review older than 30 days on page 1, we're done
 		return totalCount
@@ -56,7 +56,7 @@ func scrapeRecentReviewsCount(appURL string) int {
 		count, _, foundOldReview = scrapeReviewsPage(appURL, 2, cutoffDate)
 		totalCount += count
 		pageCount++
-		
+
 		// If we reached page 2 and still haven't found old reviews, cap at 20
 		// This means there are 20+ reviews in last 30 days
 		if !foundOldReview {
@@ -67,7 +67,7 @@ func scrapeRecentReviewsCount(appURL string) int {
 	}
 
 	// Close browser after all pages
-	runCommand("agent-browser --engine chrome close")
+	runCommand(fmt.Sprintf("agent-browser --engine chrome %s close", browserArgs))
 
 	return totalCount
 }
@@ -80,34 +80,34 @@ func scrapeReviewsPage(appURL string, page int, cutoffDate time.Time) (int, bool
 
 	// Use a unique session per app to avoid conflicts
 	sessionName := fmt.Sprintf("reviews_%d", time.Now().UnixNano())
-	
-	// Open page and get snapshot
+
+	// Open page and get snapshot - include browser args directly
 	cmd := fmt.Sprintf(
-		`agent-browser --session %s --engine chrome open "%s" && agent-browser --session %s wait --load networkidle && agent-browser --session %s snapshot`,
-		sessionName, reviewsURL, sessionName, sessionName,
+		`agent-browser %s --session %s --engine chrome %s open "%s" && agent-browser %s --session %s wait --load networkidle && agent-browser %s --session %s snapshot`,
+		browserArgs, sessionName, browserArgs, reviewsURL, browserArgs, sessionName, browserArgs, sessionName,
 	)
 
 	output, err := runCommand(cmd)
-	
+
 	// Always close this session
-	defer runCommand(fmt.Sprintf("agent-browser --session %s close", sessionName))
-	
+	defer runCommand(fmt.Sprintf("agent-browser %s --session %s close", browserArgs, sessionName))
+
 	if err != nil {
 		return 0, false, false
 	}
 
 	// Check for pagination - look for "Go to Page" or page numbers
-	hasMore := strings.Contains(output, fmt.Sprintf("Go to Page %d", page+1)) || 
+	hasMore := strings.Contains(output, fmt.Sprintf("Go to Page %d", page+1)) ||
 	           strings.Contains(output, fmt.Sprintf("Page %d", page+1))
-	
+
 	// Also check if there's a "Next Page" link
 	if !hasMore {
 		hasMore = strings.Contains(output, "Go to Next Page")
 	}
-	
+
 	// Count reviews and check if we found any old reviews
 	count, foundOldReview := countReviewsOnPage(output, cutoffDate)
-	
+
 	return count, hasMore, foundOldReview
 }
 

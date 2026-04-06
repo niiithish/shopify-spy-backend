@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"regexp"
-	"strconv"
 	"strings"
+
+	"github.com/fatih/color"
 )
 
 // App represents a basic app from search results
@@ -25,6 +27,9 @@ type AppDetail struct {
 	Launched            string `json:"launched"`
 	RecentReviews30Days int    `json:"recent_reviews_30_days"`
 }
+
+// Browser args for sandbox workaround (required in containers/VMs)
+const browserArgs = `--args "--no-sandbox"`
 
 // Scraper handles browser automation via agent-browser CLI
 type Scraper struct {
@@ -46,15 +51,33 @@ func (s *Scraper) runCommand(cmd string) (string, error) {
 	return string(output), nil
 }
 
+// LinkHref represents a link with href from JavaScript eval
+type LinkHref struct {
+	Text string `json:"text"`
+	Href string `json:"href"`
+}
+
+// EvalResult represents the JSON result from agent-browser eval
+type EvalResult struct {
+	Success bool `json:"success"`
+	Data    struct {
+		Result []LinkHref `json:"result"`
+	} `json:"data"`
+}
+
 // SearchAndExtract performs Phase 1: search and extract apps
 func (s *Scraper) SearchAndExtract(keyword string) ([]App, error) {
 	encoded := strings.ReplaceAll(keyword, " ", "%20")
 	url := fmt.Sprintf("https://apps.shopify.com/search?q=%s", encoded)
 
-	// Build command chain
+	// Use a session to maintain browser state
+	sessionName := "scraper_phase1"
+
+	// Build SINGLE command chain: open, wait, snapshot, eval (all chained with &&)
+	// This ensures browser persists between snapshot and eval
 	cmd := fmt.Sprintf(
-		`agent-browser --engine chrome open "%s" && agent-browser wait --load networkidle && agent-browser wait %d000 && agent-browser snapshot -i`,
-		url, s.WaitSeconds,
+		`agent-browser %s --session %s --engine chrome %s open "%s" && agent-browser %s --session %s wait --load networkidle && agent-browser %s --session %s wait %d000 && agent-browser %s --session %s snapshot -i && agent-browser %s --session %s eval 'Array.from(document.querySelectorAll("a")).filter(a=>{const h=a.href;const p=h.split("/").pop().split("?")[0];return p.length>=3&&!h.includes("/categories/")&&!h.includes("/stories/")&&!h.includes("/login")}).map(a=>({text:a.textContent.trim(),href:a.href.split("?")[0]}))' --json`,
+		browserArgs, sessionName, browserArgs, url, browserArgs, sessionName, browserArgs, sessionName, s.WaitSeconds, browserArgs, sessionName, browserArgs, sessionName,
 	)
 
 	output, err := s.runCommand(cmd)
@@ -62,25 +85,41 @@ func (s *Scraper) SearchAndExtract(keyword string) ([]App, error) {
 		return nil, err
 	}
 
-	// Parse snapshot
-	apps, allLinks := s.parseSnapshot(output)
+	// Parse snapshot for apps (everything before the JSON eval result)
+	// Find where the eval JSON starts
+	jsonStart := strings.Index(output, "\n{\"success\"")
+	if jsonStart < 0 {
+		jsonStart = strings.Index(output, "{\"success\"")
+	}
 
-	// Get app URLs
-	apps = s.getAppURLs(apps, allLinks)
+	var snapshotOutput, evalOutput string
+	if jsonStart > 0 {
+		snapshotOutput = output[:jsonStart]
+		evalOutput = output[jsonStart:]
+	} else {
+		snapshotOutput = output
+		evalOutput = ""
+	}
 
-	// Close browser
-	s.runCommand("agent-browser --engine chrome close")
+	// Parse snapshot for apps
+	apps := s.parseSnapshot(snapshotOutput)
+
+	// Parse eval output and assign URLs
+	if evalOutput != "" {
+		color.Blue("Debug: eval output length = %d", len(evalOutput))
+		apps = s.assignHrefs(apps, evalOutput)
+	}
+
+	// Close browser session
+	s.runCommand(fmt.Sprintf("agent-browser %s --session %s close", browserArgs, sessionName))
 
 	return apps, nil
 }
 
 // parseSnapshot extracts app data from agent-browser output
-func (s *Scraper) parseSnapshot(output string) ([]App, []Link) {
+func (s *Scraper) parseSnapshot(output string) []App {
 	var apps []App
-	var allLinks []Link
-
 	lines := strings.Split(output, "\n")
-
 	var appButtons []Button
 
 	for _, line := range lines {
@@ -90,29 +129,11 @@ func (s *Scraper) parseSnapshot(output string) ([]App, []Link) {
 		buttonRegex := regexp.MustCompile(`- button "(.+?)"\s+\[ref=(\w+)\]`)
 		if matches := buttonRegex.FindStringSubmatch(line); matches != nil {
 			text := matches[1]
-			ref := matches[2]
 			// Filter: must contain app-like info
 			if strings.Contains(text, "out of 5 stars") || strings.Contains(text, "total reviews") {
-				appButtons = append(appButtons, Button{Text: text, Ref: ref})
-			}
-			continue
-		}
-
-		// Match link
-		linkRegex := regexp.MustCompile(`- link "(.+?)"\s+\[ref=(\w+)\]`)
-		if matches := linkRegex.FindStringSubmatch(line); matches != nil {
-			text := matches[1]
-			ref := matches[2]
-			if len(strings.TrimSpace(text)) >= 3 {
-				allLinks = append(allLinks, Link{Text: text, Ref: ref})
+				appButtons = append(appButtons, Button{Text: text, Ref: matches[2]})
 			}
 		}
-	}
-
-	// Build ref->text map
-	linkMap := make(map[string]string)
-	for _, link := range allLinks {
-		linkMap[link.Ref] = link.Text
 	}
 
 	// Extract app info from buttons
@@ -121,18 +142,6 @@ func (s *Scraper) parseSnapshot(output string) ([]App, []Link) {
 	for _, button := range appButtons {
 		app := s.parseAppButton(button.Text)
 
-		// Find matching link by consecutive refs
-		buttonNumRegex := regexp.MustCompile(`\d+`)
-		buttonNumStr := buttonNumRegex.FindString(button.Ref)
-		if buttonNumStr != "" {
-			buttonNum, _ := strconv.Atoi(buttonNumStr)
-			expectedLinkRef := fmt.Sprintf("e%d", buttonNum+1)
-			if linkText, ok := linkMap[expectedLinkRef]; ok {
-				app.LinkRef = expectedLinkRef
-				_ = linkText
-			}
-		}
-
 		// Avoid duplicates
 		if app.Title != "" && !seenTitles[app.Title] {
 			seenTitles[app.Title] = true
@@ -140,7 +149,7 @@ func (s *Scraper) parseSnapshot(output string) ([]App, []Link) {
 		}
 	}
 
-	return apps, allLinks
+	return apps
 }
 
 // parseAppButton extracts structured data from button text
@@ -222,50 +231,62 @@ func (s *Scraper) parseAppButton(text string) App {
 	}
 }
 
-// getAppURLs fetches actual URLs for apps
-func (s *Scraper) getAppURLs(apps []App, allLinks []Link) []App {
-	// Build lookup map
-	linkTextToRef := make(map[string]string)
-	for _, link := range allLinks {
-		linkTextToRef[strings.TrimSpace(link.Text)] = link.Ref
+// assignHrefs matches apps to hrefs from JavaScript eval output
+func (s *Scraper) assignHrefs(apps []App, evalOutput string) []App {
+	// Find JSON in output
+	jsonStart := strings.Index(evalOutput, "{" )
+	if jsonStart < 0 {
+		return apps
+	}
+	jsonStr := evalOutput[jsonStart:]
+
+	var result EvalResult
+	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
+		return apps
 	}
 
-	for i := range apps {
-		app := &apps[i]
-		var linkRef string
+	// Build href lookup map
+	hrefMap := make(map[string]string)
+	for _, link := range result.Data.Result {
+		hrefMap[strings.TrimSpace(link.Text)] = link.Href
+	}
 
-		// Try exact match first
-		if ref, ok := linkTextToRef[strings.TrimSpace(app.Title)]; ok {
-			linkRef = ref
-		} else {
-			// Try case-insensitive partial match
-			titleLower := strings.ToLower(strings.TrimSpace(app.Title))
-			for linkText, ref := range linkTextToRef {
-				linkLower := strings.ToLower(linkText)
-				if strings.Contains(linkLower, titleLower) || strings.Contains(titleLower, linkLower) {
-					if len(linkText) >= 5 {
-						linkRef = ref
-						break
-					}
-				}
+	color.Blue("Debug: found %d links from eval", len(hrefMap))
+	// Debug: show some link names
+	count := 0
+	for text, _ := range hrefMap {
+		if count < 10 {
+			if len(text) > 40 {
+				color.Blue("  Link: '%s'", text[:40])
+			} else {
+				color.Blue("  Link: '%s'", text)
 			}
 		}
+		count++
+	}
 
-		if linkRef != "" {
-			cmd := fmt.Sprintf("agent-browser --engine chrome get attr @%s href", linkRef)
-			result, _ := s.runCommand(cmd)
-			result = strings.TrimSpace(result)
-
-			// Extract URL
-			urlRegex := regexp.MustCompile(`https://apps\.shopify\.com/[^\s]+`)
-			if matches := urlRegex.FindStringSubmatch(result); matches != nil {
-				fullURL := matches[0]
-				// Clean up tracking parameters
-				if idx := strings.Index(fullURL, "?"); idx != -1 {
-					fullURL = fullURL[:idx]
+	// Assign URLs to apps by title match
+	for i := range apps {
+		title := strings.TrimSpace(apps[i].Title)
+		if href, ok := hrefMap[title]; ok {
+			// Exact match - accept if valid app URL
+			if isValidAppURL(href) {
+				apps[i].URL = href
+			}
+		} else {
+			// Try case-insensitive partial match as fallback
+			titleLower := strings.ToLower(title)
+			for linkText, href := range hrefMap {
+				// Only consider valid app URLs
+				if !isValidAppURL(href) {
+					continue
 				}
-				app.URL = fullURL
-				app.LinkRef = linkRef
+				linkLower := strings.ToLower(linkText)
+				// Require bidirectional match or significant overlap
+				if strings.Contains(linkLower, titleLower) || strings.Contains(titleLower, linkLower) {
+					apps[i].URL = href
+					break
+				}
 			}
 		}
 	}
@@ -273,14 +294,32 @@ func (s *Scraper) getAppURLs(apps []App, allLinks []Link) []App {
 	return apps
 }
 
-// Button represents a button element
-type Button struct {
-	Text string
-	Ref  string
+// isValidAppURL checks if a URL is a valid app page (not search/category/etc)
+func isValidAppURL(href string) bool {
+	if href == "" {
+		return false
+	}
+	// Must be apps.shopify.com with a slug
+	if !strings.Contains(href, "apps.shopify.com/") {
+		return false
+	}
+	// Exclude non-app pages
+	invalidPaths := []string{"/categories/", "/stories/", "/login", "/search", "/sitemap"}
+	for _, invalid := range invalidPaths {
+		if strings.Contains(href, invalid) {
+			return false
+		}
+	}
+	// Must have a slug (last path segment > 3 chars)
+	parts := strings.Split(strings.Split(href, "?")[0], "/")
+	if len(parts) < 4 || len(parts[len(parts)-1]) < 4 {
+		return false
+	}
+	return true
 }
 
-// Link represents a link element
-type Link struct {
+// Button represents a button element
+type Button struct {
 	Text string
 	Ref  string
 }
