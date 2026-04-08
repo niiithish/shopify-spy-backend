@@ -25,7 +25,6 @@ func scrapeSingleApp(app App) AppDetail {
 
 	return AppDetail{
 		App:                 app,
-		Launched:            "", // TODO: Can be added later if needed
 		RecentReviews30Days: recentCount,
 	}
 }

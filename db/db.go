@@ -29,7 +29,7 @@ type AppResult struct {
 	ReviewCount         string    `json:"review_count"`
 	Price               string    `json:"price"`
 	RelevanceScore      float64   `json:"relevance_score"`
-	Launched            string    `json:"launched"`
+
 	RecentReviews30Days int       `json:"recent_reviews_30_days"`
 	CreatedAt           time.Time `json:"created_at,omitempty"`
 	UpdatedAt           time.Time `json:"updated_at,omitempty"`
@@ -113,6 +113,11 @@ func New() (*TursoClient, error) {
 	// Create tables if they don't exist
 	if err := client.createTables(); err != nil {
 		return nil, fmt.Errorf("failed to create tables: %w", err)
+	}
+
+	// Run migrations to remove old columns
+	if err := client.migrateDropLaunchedColumn(); err != nil {
+		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
 
 	return client, nil
@@ -233,7 +238,6 @@ func (c *TursoClient) createTables() error {
 		review_count TEXT,
 		price TEXT,
 		relevance_score REAL,
-		launched TEXT,
 		recent_reviews_30_days INTEGER DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -252,19 +256,78 @@ func (c *TursoClient) createTables() error {
 	return nil
 }
 
+// migrateDropLaunchedColumn removes the launched column if it exists
+// SQLite doesn't support DROP COLUMN directly, so we recreate the table
+func (c *TursoClient) migrateDropLaunchedColumn() error {
+	// Check if launched column exists
+	result, err := c.executeQuery("PRAGMA table_info(search_results)", nil)
+	if err != nil {
+		return err
+	}
+
+	hasLaunched := false
+	for _, row := range result.Results[0].Response.Result.Rows {
+		if len(row) >= 2 {
+			colName := getString(row[1])
+			if colName == "launched" {
+				hasLaunched = true
+				break
+			}
+		}
+	}
+
+	if !hasLaunched {
+		return nil // Column already removed
+	}
+
+	// Recreate table without launched column
+	queries := []string{
+		`CREATE TABLE search_results_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			keyword TEXT NOT NULL,
+			title TEXT NOT NULL,
+			url TEXT,
+			rating TEXT,
+			review_count TEXT,
+			price TEXT,
+			relevance_score REAL,
+			recent_reviews_30_days INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(keyword, title)
+		)`,
+		`INSERT INTO search_results_new 
+			(id, keyword, title, url, rating, review_count, price, relevance_score, recent_reviews_30_days, created_at, updated_at)
+			SELECT id, keyword, title, url, rating, review_count, price, relevance_score, recent_reviews_30_days, created_at, updated_at 
+			FROM search_results`,
+		`DROP TABLE search_results`,
+		`ALTER TABLE search_results_new RENAME TO search_results`,
+		`CREATE INDEX IF NOT EXISTS idx_keyword ON search_results(keyword)`,
+		`CREATE INDEX IF NOT EXISTS idx_created_at ON search_results(created_at)`,
+	}
+
+	for _, query := range queries {
+		_, err := c.executeQuery(query, nil)
+		if err != nil {
+			return fmt.Errorf("migration failed on query '%s': %w", query, err)
+		}
+	}
+
+	return nil
+}
+
 // SaveResults saves a batch of app results for a keyword
 func (c *TursoClient) SaveResults(keyword string, apps []AppResult) error {
 	for _, app := range apps {
 		query := `INSERT INTO search_results 
-			(keyword, title, url, rating, review_count, price, relevance_score, launched, recent_reviews_30_days)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(keyword, title, url, rating, review_count, price, relevance_score, recent_reviews_30_days)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(keyword, title) DO UPDATE SET
 				url = excluded.url,
 				rating = excluded.rating,
 				review_count = excluded.review_count,
 				price = excluded.price,
 				relevance_score = excluded.relevance_score,
-				launched = excluded.launched,
 				recent_reviews_30_days = excluded.recent_reviews_30_days,
 				updated_at = CURRENT_TIMESTAMP`
 
@@ -276,7 +339,6 @@ func (c *TursoClient) SaveResults(keyword string, apps []AppResult) error {
 			app.ReviewCount,
 			app.Price,
 			app.RelevanceScore,
-			app.Launched,
 			app.RecentReviews30Days,
 		}
 
@@ -292,7 +354,7 @@ func (c *TursoClient) SaveResults(keyword string, apps []AppResult) error {
 // GetResults retrieves all app results for a keyword
 func (c *TursoClient) GetResults(keyword string) ([]AppResult, error) {
 	query := `SELECT id, keyword, title, url, rating, review_count, price, 
-		       relevance_score, launched, recent_reviews_30_days, created_at, updated_at
+		       relevance_score, recent_reviews_30_days, created_at, updated_at
 		FROM search_results
 		WHERE keyword = ?
 		ORDER BY relevance_score DESC`
@@ -304,7 +366,7 @@ func (c *TursoClient) GetResults(keyword string) ([]AppResult, error) {
 
 	var apps []AppResult
 	for _, row := range result.Results[0].Response.Result.Rows {
-		if len(row) < 12 {
+		if len(row) < 11 {
 			continue
 		}
 		app := AppResult{
@@ -316,10 +378,9 @@ func (c *TursoClient) GetResults(keyword string) ([]AppResult, error) {
 			ReviewCount:         getString(row[5]),
 			Price:               getString(row[6]),
 			RelevanceScore:      getFloat64(row[7]),
-			Launched:            getString(row[8]),
-			RecentReviews30Days: getInt(row[9]),
-			CreatedAt:           getTime(row[10]),
-			UpdatedAt:           getTime(row[11]),
+			RecentReviews30Days: getInt(row[8]),
+			CreatedAt:           getTime(row[9]),
+			UpdatedAt:           getTime(row[10]),
 		}
 		apps = append(apps, app)
 	}

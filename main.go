@@ -10,6 +10,8 @@ Usage:
   ./shopify-scraper --query "keyword"      - Query existing results from database
   ./shopify-scraper --list                 - List all keywords in database
   ./shopify-scraper --stats                - Show database statistics
+  ./shopify-scraper --bulk                 - Run bulk scrape for all keywords
+  ./shopify-scraper --bulk-list            - List bulk keywords
 */
 
 package main
@@ -18,8 +20,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/joho/godotenv"
@@ -29,6 +33,30 @@ import (
 func init() {
 	// Load .env file if it exists
 	_ = godotenv.Load()
+}
+
+// Targeted keywords - not too generic, good volume, specific use cases
+var bulkKeywords = []string{
+	"app builder",
+	"bundle",
+	"product options",
+	"wholesale",
+	"pre-order",
+	"back in stock",
+	"store locator",
+	"loyalty rewards",
+	"subscription",
+	"upsell",
+	"age verification",
+	"cookie consent",
+	"currency converter",
+	"page builder",
+	"form builder",
+	"wishlist",
+	"size chart",
+	"gift card",
+	"referral",
+	"affiliate",
 }
 
 func main() {
@@ -56,6 +84,12 @@ func main() {
 		
 	case "--stats", "-s":
 		showStats()
+		
+	case "--bulk":
+		bulkScrape()
+		
+	case "--bulk-list":
+		listBulkKeywords()
 		
 	case "--import", "-i":
 		if len(os.Args) < 3 {
@@ -85,6 +119,8 @@ func printUsage() {
 	fmt.Println("  ./shopify-scraper --list                 List all keywords in database")
 	fmt.Println("  ./shopify-scraper --stats                Show database statistics")
 	fmt.Println("  ./shopify-scraper --import <file.json>   Import existing JSON file to database")
+	fmt.Println("  ./shopify-scraper --bulk                 Run bulk scrape for all keywords")
+	fmt.Println("  ./shopify-scraper --bulk-list            List bulk keywords")
 	fmt.Println()
 	color.White("Environment variables:")
 	fmt.Println("  TURSO_DATABASE_URL    Turso database URL (e.g., libsql://...)")
@@ -140,14 +176,9 @@ func scrapeAndStore(keyword string) {
 	appResults := convertToAppResults(keyword, detailedApps)
 	if err := database.SaveResults(keyword, appResults); err != nil {
 		color.Red("❌ Failed to save results to database: %v", err)
-		// Still save to JSON as fallback
-		saveToJSON(keyword, detailedApps)
-	} else {
-		color.Green("✅ Results saved to database for keyword: %s", keyword)
+		os.Exit(1)
 	}
-
-	// Also save to JSON for backward compatibility
-	saveToJSON(keyword, detailedApps)
+	color.Green("✅ Results saved to database for keyword: %s", keyword)
 
 	// Print summary
 	color.Cyan("\n📊 Summary:")
@@ -246,6 +277,86 @@ func showStats() {
 	}
 }
 
+// listBulkKeywords lists all keywords in the bulk scrape list
+func listBulkKeywords() {
+	color.Cyan("📋 Bulk Keywords (%d total):", len(bulkKeywords))
+	fmt.Println()
+	for i, kw := range bulkKeywords {
+		fmt.Printf("  %2d. %s\n", i+1, kw)
+	}
+}
+
+// bulkScrape runs the scraper for all keywords sequentially
+func bulkScrape() {
+	color.Cyan("🚀 Starting Bulk Scrape")
+	color.White("   Keywords: %d", len(bulkKeywords))
+	color.White("   Mode: Sequential (one at a time)")
+	fmt.Println()
+
+	startTime := time.Now()
+	successCount := 0
+	failCount := 0
+	var failedKeywords []string
+
+	for i, keyword := range bulkKeywords {
+		color.Cyan("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		color.Cyan("📍 Keyword %d/%d: %q", i+1, len(bulkKeywords), keyword)
+		color.Cyan("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Println()
+
+		keywordStart := time.Now()
+
+		// Run the scraper for this keyword
+		cmd := exec.Command("./shopify-scraper", keyword)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		err := cmd.Run()
+
+		keywordDuration := time.Since(keywordStart)
+
+		if err != nil {
+			color.Red("❌ Failed: %s (took %v)", keyword, keywordDuration.Round(time.Second))
+			failCount++
+			failedKeywords = append(failedKeywords, keyword)
+		} else {
+			color.Green("✅ Completed: %s (took %v)", keyword, keywordDuration.Round(time.Second))
+			successCount++
+		}
+
+		// Small delay between keywords to let system breathe
+		if i < len(bulkKeywords)-1 {
+			color.Yellow("⏳ Waiting 5 seconds before next keyword...")
+			time.Sleep(5 * time.Second)
+		}
+	}
+
+	totalDuration := time.Since(startTime)
+
+	// Summary
+	fmt.Println()
+	color.Cyan("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	color.Cyan("📊 BULK SCRAPE SUMMARY")
+	color.Cyan("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Println()
+	color.White("   Total keywords: %d", len(bulkKeywords))
+	color.Green("   Successful:     %d", successCount)
+	if failCount > 0 {
+		color.Red("   Failed:         %d", failCount)
+		color.Red("   Failed keywords:")
+		for _, kw := range failedKeywords {
+			color.Red("     - %s", kw)
+		}
+	}
+	color.White("   Total time:     %v", totalDuration.Round(time.Second))
+	color.White("   Avg per keyword: %v", (totalDuration/time.Duration(len(bulkKeywords))).Round(time.Second))
+	fmt.Println()
+
+	if failCount > 0 {
+		os.Exit(1)
+	}
+}
+
 // scrapeAppDetailsConcurrent scrapes app details concurrently
 func scrapeAppDetailsConcurrent(apps []App, maxConcurrency int) []AppDetail {
 	var wg sync.WaitGroup
@@ -290,20 +401,13 @@ func convertToAppResults(keyword string, apps []AppDetail) []db.AppResult {
 			ReviewCount:         app.ReviewCount,
 			Price:               app.Price,
 			RelevanceScore:      app.RelevanceScore,
-			Launched:            app.Launched,
 			RecentReviews30Days: app.RecentReviews30Days,
 		}
 	}
 	return results
 }
 
-// saveToJSON saves results to a JSON file (backward compatibility)
-func saveToJSON(keyword string, apps []AppDetail) {
-	outputFile := fmt.Sprintf("shopify_apps_%s.json", strings.ReplaceAll(keyword, " ", "_"))
-	data, _ := json.MarshalIndent(apps, "", "  ")
-	os.WriteFile(outputFile, data, 0644)
-	color.Green("💾 Results also saved to: %s", outputFile)
-}
+
 
 // importJSONFile imports an existing JSON file to the database
 func importJSONFile(filename string) {

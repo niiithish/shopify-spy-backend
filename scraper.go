@@ -24,8 +24,7 @@ type App struct {
 // AppDetail represents detailed app information
 type AppDetail struct {
 	App
-	Launched            string `json:"launched"`
-	RecentReviews30Days int    `json:"recent_reviews_30_days"`
+	RecentReviews30Days int `json:"recent_reviews_30_days"`
 }
 
 // Browser args for sandbox workaround (required in containers/VMs)
