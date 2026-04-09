@@ -96,10 +96,12 @@ The scraper creates a `search_results` table with the following columns:
 | `review_count` | TEXT | Total review count |
 | `price` | TEXT | Pricing info |
 | `relevance_score` | REAL | Relevance percentage |
-| `launched` | TEXT | Launch date |
 | `recent_reviews_30_days` | INTEGER | Reviews in last 30 days |
+| `trending_score` | REAL | % of recent reviews vs total (higher = more trending) |
 | `created_at` | DATETIME | First seen timestamp |
 | `updated_at` | DATETIME | Last update timestamp |
+
+**Trending Score** indicates how "hot" an app is. A high trending score means most of the app's total reviews came in the last 30 days, suggesting it's either new or gaining popularity rapidly. Example: An app with 10 total reviews where 5 came in the last 30 days has a 50% trending score.
 
 ## Project Structure
 

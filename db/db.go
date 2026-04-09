@@ -29,8 +29,8 @@ type AppResult struct {
 	ReviewCount         string    `json:"review_count"`
 	Price               string    `json:"price"`
 	RelevanceScore      float64   `json:"relevance_score"`
-
 	RecentReviews30Days int       `json:"recent_reviews_30_days"`
+	TrendingScore       float64   `json:"trending_score"` // % of recent reviews vs total
 	CreatedAt           time.Time `json:"created_at,omitempty"`
 	UpdatedAt           time.Time `json:"updated_at,omitempty"`
 }
@@ -115,9 +115,12 @@ func New() (*TursoClient, error) {
 		return nil, fmt.Errorf("failed to create tables: %w", err)
 	}
 
-	// Run migrations to remove old columns
+	// Run migrations
 	if err := client.migrateDropLaunchedColumn(); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
+	}
+	if err := client.migrateAddTrendingScore(); err != nil {
+		return nil, fmt.Errorf("failed to add trending_score column: %w", err)
 	}
 
 	return client, nil
@@ -239,6 +242,7 @@ func (c *TursoClient) createTables() error {
 		price TEXT,
 		relevance_score REAL,
 		recent_reviews_30_days INTEGER DEFAULT 0,
+		trending_score REAL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 		UNIQUE(keyword, title)
@@ -280,7 +284,7 @@ func (c *TursoClient) migrateDropLaunchedColumn() error {
 		return nil // Column already removed
 	}
 
-	// Recreate table without launched column
+	// Recreate table without launched column (but with trending_score)
 	queries := []string{
 		`CREATE TABLE search_results_new (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -292,13 +296,14 @@ func (c *TursoClient) migrateDropLaunchedColumn() error {
 			price TEXT,
 			relevance_score REAL,
 			recent_reviews_30_days INTEGER DEFAULT 0,
+			trending_score REAL DEFAULT 0,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(keyword, title)
 		)`,
 		`INSERT INTO search_results_new 
-			(id, keyword, title, url, rating, review_count, price, relevance_score, recent_reviews_30_days, created_at, updated_at)
-			SELECT id, keyword, title, url, rating, review_count, price, relevance_score, recent_reviews_30_days, created_at, updated_at 
+			(id, keyword, title, url, rating, review_count, price, relevance_score, recent_reviews_30_days, trending_score, created_at, updated_at)
+			SELECT id, keyword, title, url, rating, review_count, price, relevance_score, recent_reviews_30_days, 0, created_at, updated_at 
 			FROM search_results`,
 		`DROP TABLE search_results`,
 		`ALTER TABLE search_results_new RENAME TO search_results`,
@@ -316,12 +321,47 @@ func (c *TursoClient) migrateDropLaunchedColumn() error {
 	return nil
 }
 
+// migrateAddTrendingScore adds the trending_score column if it doesn't exist
+func (c *TursoClient) migrateAddTrendingScore() error {
+	// Check if trending_score column exists
+	result, err := c.executeQuery("PRAGMA table_info(search_results)", nil)
+	if err != nil {
+		return err
+	}
+
+	hasTrendingScore := false
+	for _, row := range result.Results[0].Response.Result.Rows {
+		if len(row) >= 2 {
+			colName := getString(row[1])
+			if colName == "trending_score" {
+				hasTrendingScore = true
+				break
+			}
+		}
+	}
+
+	if hasTrendingScore {
+		return nil // Column already exists
+	}
+
+	// Add the column
+	_, err = c.executeQuery("ALTER TABLE search_results ADD COLUMN trending_score REAL DEFAULT 0", nil)
+	if err != nil {
+		return fmt.Errorf("failed to add trending_score column: %w", err)
+	}
+
+	return nil
+}
+
 // SaveResults saves a batch of app results for a keyword
 func (c *TursoClient) SaveResults(keyword string, apps []AppResult) error {
 	for _, app := range apps {
+		// Calculate trending score: % of recent reviews vs total
+		trendingScore := calculateTrendingScore(app.RecentReviews30Days, app.ReviewCount)
+
 		query := `INSERT INTO search_results 
-			(keyword, title, url, rating, review_count, price, relevance_score, recent_reviews_30_days)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			(keyword, title, url, rating, review_count, price, relevance_score, recent_reviews_30_days, trending_score)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(keyword, title) DO UPDATE SET
 				url = excluded.url,
 				rating = excluded.rating,
@@ -329,6 +369,7 @@ func (c *TursoClient) SaveResults(keyword string, apps []AppResult) error {
 				price = excluded.price,
 				relevance_score = excluded.relevance_score,
 				recent_reviews_30_days = excluded.recent_reviews_30_days,
+				trending_score = excluded.trending_score,
 				updated_at = CURRENT_TIMESTAMP`
 
 		args := []interface{}{
@@ -340,6 +381,7 @@ func (c *TursoClient) SaveResults(keyword string, apps []AppResult) error {
 			app.Price,
 			app.RelevanceScore,
 			app.RecentReviews30Days,
+			trendingScore,
 		}
 
 		_, err := c.executeQuery(query, args)
@@ -351,10 +393,31 @@ func (c *TursoClient) SaveResults(keyword string, apps []AppResult) error {
 	return nil
 }
 
+// calculateTrendingScore computes the trending score from recent and total reviews
+func calculateTrendingScore(recentReviews int, totalReviewsStr string) float64 {
+	if recentReviews == 0 {
+		return 0
+	}
+	totalReviews := getIntFromString(totalReviewsStr)
+	if totalReviews == 0 {
+		return 0
+	}
+	return float64(recentReviews) / float64(totalReviews) * 100
+}
+
+// getIntFromString parses an integer from a string
+func getIntFromString(s string) int {
+	if s == "" {
+		return 0
+	}
+	n, _ := strconv.Atoi(s)
+	return n
+}
+
 // GetResults retrieves all app results for a keyword
 func (c *TursoClient) GetResults(keyword string) ([]AppResult, error) {
 	query := `SELECT id, keyword, title, url, rating, review_count, price, 
-		       relevance_score, recent_reviews_30_days, created_at, updated_at
+		       relevance_score, recent_reviews_30_days, trending_score, created_at, updated_at
 		FROM search_results
 		WHERE keyword = ?
 		ORDER BY relevance_score DESC`
@@ -366,7 +429,7 @@ func (c *TursoClient) GetResults(keyword string) ([]AppResult, error) {
 
 	var apps []AppResult
 	for _, row := range result.Results[0].Response.Result.Rows {
-		if len(row) < 11 {
+		if len(row) < 12 {
 			continue
 		}
 		app := AppResult{
@@ -379,8 +442,9 @@ func (c *TursoClient) GetResults(keyword string) ([]AppResult, error) {
 			Price:               getString(row[6]),
 			RelevanceScore:      getFloat64(row[7]),
 			RecentReviews30Days: getInt(row[8]),
-			CreatedAt:           getTime(row[9]),
-			UpdatedAt:           getTime(row[10]),
+			TrendingScore:       getFloat64(row[9]),
+			CreatedAt:           getTime(row[10]),
+			UpdatedAt:           getTime(row[11]),
 		}
 		apps = append(apps, app)
 	}
