@@ -91,6 +91,9 @@ func main() {
 	case "--bulk-list":
 		listBulkKeywords()
 		
+	case "--normalize-prices":
+		normalizePrices()
+
 	case "--import", "-i":
 		if len(os.Args) < 3 {
 			color.Red("❌ Please provide a JSON file to import")
@@ -119,6 +122,7 @@ func printUsage() {
 	fmt.Println("  ./shopify-scraper --list                 List all keywords in database")
 	fmt.Println("  ./shopify-scraper --stats                Show database statistics")
 	fmt.Println("  ./shopify-scraper --import <file.json>   Import existing JSON file to database")
+	fmt.Println("  ./shopify-scraper --normalize-prices    Normalize price column to Free/Free trial/Paid")
 	fmt.Println("  ./shopify-scraper --bulk                 Run bulk scrape for all keywords")
 	fmt.Println("  ./shopify-scraper --bulk-list            List bulk keywords")
 	fmt.Println()
@@ -275,6 +279,25 @@ func showStats() {
 	if latest, ok := stats["latest_scrape"].(string); ok && latest != "" {
 		color.White("   Latest scrape: %s", latest)
 	}
+}
+
+// normalizePrices normalizes all price values in the database
+func normalizePrices() {
+	color.Cyan("🗄️  Connecting to Turso database...")
+	database, err := db.New()
+	if err != nil {
+		color.Red("❌ Failed to connect to database: %v", err)
+		os.Exit(1)
+	}
+
+	color.Cyan("🔄 Normalizing price values...")
+	updated, err := database.NormalizePrices()
+	if err != nil {
+		color.Red("❌ Failed to normalize prices: %v", err)
+		os.Exit(1)
+	}
+
+	color.Green("✅ Normalized %d price values to Free/Free trial/Paid", updated)
 }
 
 // listBulkKeywords lists all keywords in the bulk scrape list

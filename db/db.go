@@ -512,6 +512,48 @@ func (c *TursoClient) GetStats() (map[string]interface{}, error) {
 	return stats, nil
 }
 
+// NormalizePrices updates all price values to only "Free", "Free trial", or "Paid"
+func (c *TursoClient) NormalizePrices() (int, error) {
+	result, err := c.executeQuery("SELECT id, price FROM search_results", nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query prices: %w", err)
+	}
+
+	updated := 0
+	for _, row := range result.Results[0].Response.Result.Rows {
+		if len(row) < 2 {
+			continue
+		}
+		id := getInt64(row[0])
+		rawPrice := getString(row[1])
+		normalized := normalizePrice(rawPrice)
+		if normalized != rawPrice {
+			_, err := c.executeQuery("UPDATE search_results SET price = ? WHERE id = ?", []interface{}{normalized, id})
+			if err != nil {
+				return updated, fmt.Errorf("failed to update id %d: %w", id, err)
+			}
+			updated++
+		}
+	}
+
+	return updated, nil
+}
+
+// normalizePrice maps any price string to "Free", "Free trial", or "Paid"
+func normalizePrice(raw string) string {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if lower == "" {
+		return "Paid"
+	}
+	if strings.Contains(lower, "free trial") {
+		return "Free trial"
+	}
+	if strings.Contains(lower, "free") {
+		return "Free"
+	}
+	return "Paid"
+}
+
 // Helper functions to convert TypedValue to specific types
 func getString(v TypedValue) string {
 	if v.Type == "null" || v.Value == nil {

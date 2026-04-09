@@ -177,47 +177,19 @@ func (s *Scraper) parseAppButton(text string) App {
 		reviews = matches[1]
 	}
 
-	// Extract price info - only the pricing keyword, not the description
+	// Extract price info - normalize to "Free", "Free trial", or "Paid"
 	price := ""
 	if strings.Contains(text, "•") {
 		parts := strings.Split(text, "•")
 		if len(parts) > 1 {
-			// Price is the first part after •, description follows
-			// Common price patterns: "Free", "Free plan available", "Free trial available", "Free to install", "$9.99/month", etc.
-			afterBullet := strings.TrimSpace(parts[1])
-			
-			// Split by common description starters (capital letter after space indicates new sentence)
-			// Look for price patterns and stop at first description word
-			pricePatterns := []string{
-				"Free plan available",
-				"Free trial available", 
-				"Free to install",
-				"Free",
-			}
-			
-			for _, pattern := range pricePatterns {
-				if strings.HasPrefix(afterBullet, pattern) {
-					price = pattern
-					break
-				}
-			}
-			
-			// If no pattern matched, take everything up to first sentence-like break
-			// (lowercase followed by uppercase usually indicates new sentence)
-			if price == "" {
-				words := strings.Fields(afterBullet)
-				var priceWords []string
-				for i, word := range words {
-					if i > 0 {
-						// Check if previous word ends with period or this word starts with uppercase
-						prevWord := words[i-1]
-						if strings.HasSuffix(prevWord, ".") || (len(word) > 0 && word[0] >= 'A' && word[0] <= 'Z' && len(prevWord) > 0 && prevWord[len(prevWord)-1] >= 'a' && prevWord[len(prevWord)-1] <= 'z') {
-							break
-						}
-					}
-					priceWords = append(priceWords, word)
-				}
-				price = strings.Join(priceWords, " ")
+			afterBullet := strings.ToLower(strings.TrimSpace(parts[1]))
+
+			if strings.Contains(afterBullet, "free trial") {
+				price = "Free trial"
+			} else if strings.Contains(afterBullet, "free") {
+				price = "Free"
+			} else {
+				price = "Paid"
 			}
 		}
 	}
