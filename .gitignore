@@ -1,3 +1,14 @@
 *.json
 shopify-scraper
 .env
+__pycache__/
+*.pyc
+node_modules/
+bun.lock
+
+# Runtime logs
+*.log
+discover_run.log
+bulk_scrape*.log
+sequential_scrape_*.log
+batch3_scrape_*.log

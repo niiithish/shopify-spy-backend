@@ -35,28 +35,127 @@ func init() {
 	_ = godotenv.Load()
 }
 
-// Targeted keywords - not too generic, good volume, specific use cases
+// 100 NEW keywords in 10 batches - batch 2 research
 var bulkKeywords = []string{
-	"app builder",
-	"bundle",
-	"product options",
-	"wholesale",
-	"pre-order",
-	"back in stock",
-	"store locator",
-	"loyalty rewards",
-	"subscription",
-	"upsell",
-	"age verification",
-	"cookie consent",
-	"currency converter",
-	"page builder",
-	"form builder",
-	"wishlist",
-	"size chart",
-	"gift card",
-	"referral",
-	"affiliate",
+	// Batch 1: Analytics & Reporting
+	"analytics dashboard",
+	"conversion tracking",
+	"heatmaps",
+	"session recording",
+	"customer lifetime value",
+	"cohort analysis",
+	"funnel analytics",
+	"attribution tracking",
+	"sales forecasting",
+	"profit calculator",
+
+	// Batch 2: Mobile & App
+	"mobile app builder",
+	"push notifications",
+	"app-only deals",
+	"mobile checkout",
+	"mobile payments",
+	"app analytics",
+	"mobile loyalty",
+	"app personalization",
+	"mobile search",
+	"app reviews",
+
+	// Batch 3: B2B & Wholesale
+	"b2b portal",
+	"trade pricing",
+	"net terms",
+	"volume discounts",
+	"customer groups",
+	"wholesale registration",
+	"b2b ordering",
+	"quote management",
+	"b2b checkout",
+	"wholesale catalog",
+
+	// Batch 4: Food & Restaurant
+	"food delivery",
+	"restaurant ordering",
+	"menu management",
+	"pickup scheduling",
+	"table reservations",
+	"food subscriptions",
+	"catering orders",
+	"kitchen display",
+	"delivery zones",
+	"food packaging",
+
+	// Batch 5: Fashion & Apparel
+	"outfit builder",
+	"lookbook",
+	"style quiz",
+	"color swatches",
+	"fabric options",
+	"custom embroidery",
+	"made to order",
+	"fashion subscription",
+	"clothing rental",
+	"size predictor",
+
+	// Batch 6: Home & Furniture
+	"room planner",
+	"3d product viewer",
+	"furniture configurator",
+	"augmented reality",
+	"assembly instructions",
+	"delivery scheduling",
+	"room visualization",
+	"custom furniture",
+	"interior design",
+	"home staging",
+
+	// Batch 7: Jewelry & Luxury
+	"ring sizer",
+	"engraving tool",
+	"diamond selector",
+	"jewelry customizer",
+	"luxury authentication",
+	"high value insurance",
+	"jewelry appraisal",
+	"custom jewelry",
+	"gemstone selector",
+	"precious metals",
+
+	// Batch 8: Pet & Specialty
+	"pet food subscription",
+	"pet product finder",
+	"veterinary records",
+	"pet grooming booking",
+	"pet insurance",
+	"animal nutrition",
+	"pet training",
+	"exotic pets",
+	"pet health tracking",
+	"pet community",
+
+	// Batch 9: Marketing Advanced
+	"facebook ads",
+	"google shopping",
+	"pinterest marketing",
+	"youtube integration",
+	"twitter ads",
+	"snapchat marketing",
+	"email automation",
+	"marketing automation",
+	"customer segmentation",
+	"retargeting",
+
+	// Batch 10: Operations & Tools
+	"accounting integration",
+	"erp integration",
+	"crm integration",
+	"workflow automation",
+	"task management",
+	"team collaboration",
+	"employee management",
+	"commission tracking",
+	"multi store management",
+	"marketplace integration",
 }
 
 func main() {
@@ -145,7 +244,7 @@ func scrapeAndStore(keyword string) {
 
 	// Phase 1: Search and extract
 	color.Cyan("🔍 Phase 1: Searching for '%s'...", keyword)
-	scraper := NewScraper(5)
+	scraper := NewScraper(2) // Reduced from 5 to avoid overwhelming VPS
 	apps, err := scraper.SearchAndExtract(keyword)
 	if err != nil {
 		color.Red("❌ Phase 1 failed: %v", err)
@@ -153,11 +252,15 @@ func scrapeAndStore(keyword string) {
 	}
 	color.Green("✅ Phase 1: Found %d raw apps", len(apps))
 
-	// Phase 2: Relevance filtering
-	color.Cyan("\n🎯 Phase 2: Filtering by relevance...")
+	// Phase 2: Relevance filtering (optional - now saving all apps)
+	color.Cyan("\n🎯 Phase 2: Scoring relevance (saving all apps)...")
 	scorer := NewRelevanceScorer(keyword)
-	filteredApps := scorer.FilterAndSort(apps, 30.0, 5)
-	color.Green("✅ Phase 2: Filtered to %d relevant apps", len(filteredApps))
+	for i := range apps {
+		apps[i].RelevanceScore = scorer.scoreApp(apps[i])
+	}
+	// Save all apps, not just filtered ones
+	filteredApps := apps
+	color.Green("✅ Phase 2: Will save all %d apps", len(filteredApps))
 
 	// Display filtered results
 	fmt.Println()
@@ -170,9 +273,9 @@ func scrapeAndStore(keyword string) {
 		fmt.Println()
 	}
 
-	// Phase 3: Scrape app details concurrently
+	// Phase 3: Scrape app details concurrently (reduced for VPS stability)
 	color.Cyan("🚀 Phase 3: Scraping app details concurrently...")
-	detailedApps := scrapeAppDetailsConcurrent(filteredApps, 5)
+	detailedApps := scrapeAppDetailsConcurrent(filteredApps, 2)
 	color.Green("✅ Phase 3: Scraped details for %d apps\n", len(detailedApps))
 
 	// Phase 4: Save results to database

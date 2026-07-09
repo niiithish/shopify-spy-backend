@@ -9,6 +9,7 @@ A Go-based scraper for the Shopify App Store that stores results in Turso (SQLit
 - 📊 Scrape detailed app information (ratings, reviews, recent activity)
 - 💾 Store results in Turso database (with JSON backup)
 - 📈 Query and manage stored results
+- 🗺️ **Sitemap discovery** — find *all* App Store apps (no keyword needed), skip known URLs, sequential agent-browser detail scrape, crash-safe resume
 
 ## Prerequisites
 
@@ -82,7 +83,41 @@ This will:
 ./shopify-scraper -h
 ```
 
+### Sitemap discovery (full catalog, no keyword)
+
+Uses Shopify's public EN sitemap (`~23k` app URLs), diffs against apps already in the DB, then detail-scrapes **new** apps one-by-one with **agent-browser** (same stack as the Go scraper).
+
+```bash
+# One-time: create apps table + backfill known apps from search_results
+python3 discover.py init
+
+# Fetch sitemap and queue unknown slugs (no browser)
+python3 discover.py sync-sitemap
+
+# Detail-scrape up to N new apps (sequential, resume-safe)
+python3 discover.py run --limit 2000 --delay 20
+
+# Status anytime
+python3 discover.py status
+# or
+python3 db.py --discover-status
+
+# Live log while a run is active
+tail -f discover_run.log
+```
+
+**Resume / crash safety:** progress is stored in the `apps` table (`scrape_status`, `last_scraped_at`). Re-running only processes `pending` rows — finished apps are never re-scraped.
+
+**Dedupe key:** app slug / URL (not title).
+
+**DB notes:**
+- Canonical catalog → `apps` table
+- Keyword research stays in `search_results`
+- Successful discovery scrapes are also mirrored into `search_results` with keyword `__sitemap__` so existing tooling can see them
+
 ## Database Schema
+
+### `search_results` (keyword research)
 
 The scraper creates a `search_results` table with the following columns:
 
@@ -103,19 +138,38 @@ The scraper creates a `search_results` table with the following columns:
 
 **Trending Score** indicates how "hot" an app is. A high trending score means most of the app's total reviews came in the last 30 days, suggesting it's either new or gaining popularity rapidly. Example: An app with 10 total reviews where 5 came in the last 30 days has a 50% trending score.
 
+### `apps` (catalog / discovery)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `slug` | TEXT UNIQUE | App Store slug (from URL) |
+| `url` | TEXT UNIQUE | Canonical listing URL |
+| `title` / `rating` / `review_count` / `price` | TEXT | Listing fields |
+| `recent_reviews_30_days` | INTEGER | Recent review momentum |
+| `trending_score` | REAL | % recent vs total reviews |
+| `source` | TEXT | `sitemap` or `keyword` |
+| `scrape_status` | TEXT | `pending` / `done` / `failed` |
+| `last_scraped_at` | DATETIME | When detail scrape finished |
+| `first_seen_at` | DATETIME | When first discovered |
+| `lastmod` | TEXT | Sitemap lastmod (if from sitemap) |
+| `scrape_attempts` / `last_error` | | Retry / error tracking |
+
 ## Project Structure
 
 ```
 .
-├── main.go              # Main entry point
+├── main.go              # Main entry point (keyword scrape)
 ├── scraper.go           # Phase 1: Search and extract
 ├── relevance.go         # Phase 2: Relevance filtering
 ├── detail.go            # Phase 3: App detail scraping
 ├── db/
-│   └── db.go           # Turso database client
-├── go.mod              # Go module definition
-├── go.sum              # Go dependencies
-└── README.md           # This file
+│   └── db.go            # Turso database client (Go)
+├── discover.py          # Sitemap discovery + sequential agent-browser scrape
+├── run_discover.sh      # Convenience runner for discovery jobs
+├── db.py                # Quick Turso SQL / --discover-status helper
+├── go.mod               # Go module definition
+├── go.sum               # Go dependencies
+└── README.md            # This file
 ```
 
 ## Environment Variables
