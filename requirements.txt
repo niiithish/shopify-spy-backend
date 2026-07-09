@@ -1,2 +1,6 @@
-# No Python packages needed - uses agent-browser CLI
-# Install agent-browser with: agent-browser install
+# Core scrapers use:
+# - Go binary (./shopify-scraper) + agent-browser CLI
+# - discover.py / db.py: Python 3 stdlib only (no pip deps)
+#
+# Install agent-browser separately:
+#   npm i -g agent-browser && agent-browser install

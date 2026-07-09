@@ -158,19 +158,22 @@ The scraper creates a `search_results` table with the following columns:
 
 ```
 .
-├── main.go              # Main entry point (keyword scrape)
+├── main.go              # Keyword scrape entry point
 ├── scraper.go           # Phase 1: Search and extract
-├── relevance.go         # Phase 2: Relevance filtering
-├── detail.go            # Phase 3: App detail scraping
+├── relevance.go         # Phase 2: Relevance scoring
+├── detail.go            # Phase 3: Recent reviews via agent-browser
 ├── db/
-│   └── db.go            # Turso database client (Go)
-├── discover.py          # Sitemap discovery + sequential agent-browser scrape
-├── run_discover.sh      # Convenience runner for discovery jobs
-├── db.py                # Quick Turso SQL / --discover-status helper
-├── go.mod               # Go module definition
-├── go.sum               # Go dependencies
-└── README.md            # This file
+│   └── db.go            # Turso client (Go)
+├── discover.py          # Sitemap discovery (full catalog)
+├── run_discover.sh      # Long-running discovery helper
+├── db.py                # Quick Turso SQL / status CLI
+├── go.mod / go.sum
+├── mise.toml            # Optional Go toolchain pin
+├── requirements.txt     # Notes only (stdlib + agent-browser)
+└── README.md
 ```
+
+Local-only (gitignored): `.env`, `shopify-scraper` binary, `*.log`, JSON dumps.
 
 ## Environment Variables
 

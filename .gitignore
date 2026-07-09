@@ -1,14 +1,29 @@
-*.json
-shopify-scraper
+# Secrets & local env
 .env
+
+# Built binary
+shopify-scraper
+
+# Legacy / local dump artifacts
+*.json
+!package.json
+!tsconfig.json
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+
+# Node experiments (not part of core scraper)
 node_modules/
 bun.lock
+package-lock.json
 
 # Runtime logs
 *.log
 discover_run.log
-bulk_scrape*.log
-sequential_scrape_*.log
-batch3_scrape_*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
