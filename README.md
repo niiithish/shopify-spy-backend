@@ -1,3 +1,9 @@
+> **Moved:** this project now lives in the monorepo  
+> **https://github.com/niiithish/shopify-spy** (`backend/` folder).  
+> Prefer that repo for new work.
+
+---
+
 # Shopify App Store Scraper
 
 A Go-based scraper for the Shopify App Store that stores results in Turso (SQLite) database.
