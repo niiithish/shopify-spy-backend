@@ -110,24 +110,34 @@ func scrapeReviewsPage(appURL string, page int, cutoffDate time.Time) (int, bool
 	return count, hasMore, foundOldReview
 }
 
-// countReviewsOnPage parses snapshot and counts reviews within cutoff date
+// countReviewsOnPage parses snapshot and counts reviews within cutoff date.
 // Returns: (count, foundOldReview)
+//
+// Developer/app-owner replies look like:
+//
+//	StaticText "App Developer replied June 23, 2026"
+//
+// Those are not reviews and must be ignored. Real review timestamps appear as a
+// StaticText node whose entire content is a date (e.g. "June 12, 2026").
 func countReviewsOnPage(output string, cutoffDate time.Time) (int, bool) {
 	count := 0
 	foundOldReview := false
 
+	// Only match StaticText whose full content is a date — avoids picking the
+	// date out of "Developer replied June 23, 2026".
+	dateRegex := regexp.MustCompile(
+		`StaticText "((?:January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4})"`,
+	)
+
 	lines := strings.Split(output, "\n")
 
 	for _, line := range lines {
-		// Skip lines that contain "replied" (these are merchant replies, not reviews)
-		if strings.Contains(line, "replied") {
+		// Skip developer reply lines entirely (belt-and-suspenders with full-date match)
+		if strings.Contains(strings.ToLower(line), "replied") {
 			continue
 		}
 
-		// Look for date pattern in StaticText
-		dateRegex := regexp.MustCompile(`StaticText "([A-Za-z]+ \d{1,2}, \d{4})"`)
 		matches := dateRegex.FindStringSubmatch(line)
-
 		if len(matches) > 1 {
 			dateStr := matches[1]
 			reviewDate, err := time.Parse("January 2, 2006", dateStr)

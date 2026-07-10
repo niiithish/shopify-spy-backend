@@ -220,6 +220,13 @@ def init_schema() -> None:
     db_exec("CREATE INDEX IF NOT EXISTS idx_apps_status ON apps(scrape_status)")
     db_exec("CREATE INDEX IF NOT EXISTS idx_apps_lastmod ON apps(lastmod)")
     db_exec("CREATE INDEX IF NOT EXISTS idx_apps_scraped ON apps(last_scraped_at)")
+    # Legacy mistake: UNIQUE(title) blocked same app under multiple keywords
+    # (and blocked __sitemap__ dual-write). Intended uniqueness is (keyword, title).
+    try:
+        db_exec("DROP INDEX IF EXISTS idx_search_results_title")
+        db_exec("CREATE INDEX IF NOT EXISTS idx_search_results_title ON search_results(title)")
+    except Exception as e:
+        print(f"⚠ search_results title index normalize skipped: {e}")
     print("✅ apps table ready")
 
 
@@ -584,13 +591,37 @@ def parse_listing_text(text: str) -> dict:
     }
 
 
-def count_recent_reviews_browser(app_url: str) -> int:
-    """Count reviews in last 30 days via agent-browser (up to 2 pages, cap 20)."""
-    cutoff = datetime.now() - timedelta(days=30)
+def _review_dates_from_page_text(text: str) -> list[str]:
+    """Extract merchant review dates from a reviews page, excluding developer replies.
+
+    Shopify app review pages interleave developer replies like:
+      "App Developer replied June 23, 2026"
+    Those timestamps are not reviews. Real review dates appear as their own line:
+      "June 12, 2026"
+    """
     date_re = re.compile(
-        r"((?:January|February|March|April|May|June|July|August|September|"
-        r"October|November|December)\s+\d{1,2},\s+\d{4})"
+        r"^(?:January|February|March|April|May|June|July|August|September|"
+        r"October|November|December)\s+\d{1,2},\s+\d{4}$"
     )
+    dates: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Developer / app-owner reply lines always contain "replied"
+        if re.search(r"\breplied\b", stripped, re.I):
+            continue
+        if date_re.match(stripped):
+            dates.append(stripped)
+    return dates
+
+
+def count_recent_reviews_browser(app_url: str) -> int:
+    """Count reviews in last 30 days via agent-browser (up to 2 pages, cap 20).
+
+    Only counts actual merchant reviews — developer reply dates are ignored.
+    """
+    cutoff = datetime.now() - timedelta(days=30)
     total = 0
     for page in (1, 2):
         url = f"{app_url}/reviews?sort_by=newest&page={page}"
@@ -602,7 +633,7 @@ def count_recent_reviews_browser(app_url: str) -> int:
             if page == 1:
                 raise
             break
-        dates = date_re.findall(text)
+        dates = _review_dates_from_page_text(text)
         if not dates:
             break
         page_recent = 0
@@ -686,34 +717,39 @@ def mark_done(slug: str, data: dict) -> None:
             slug,
         ],
     )
-    # Mirror into search_results for existing tooling
+    # Mirror into search_results for existing tooling.
+    # apps table is source of truth — dual-write must never fail the scrape.
     title = data.get("title") or slug
-    db_exec(
-        """
-        INSERT INTO search_results
-          (keyword, title, url, rating, review_count, price, relevance_score,
-           recent_reviews_30_days, trending_score)
-        VALUES (?, ?, ?, ?, ?, ?, 100.0, ?, ?)
-        ON CONFLICT(keyword, title) DO UPDATE SET
-          url = excluded.url,
-          rating = excluded.rating,
-          review_count = excluded.review_count,
-          price = excluded.price,
-          recent_reviews_30_days = excluded.recent_reviews_30_days,
-          trending_score = excluded.trending_score,
-          updated_at = CURRENT_TIMESTAMP
-        """,
-        [
-            SITEMAP_KEYWORD,
-            title,
-            f"https://apps.shopify.com/{slug}",
-            data.get("rating"),
-            data.get("review_count"),
-            data.get("price"),
-            int(data.get("recent_reviews_30_days") or 0),
-            float(data.get("trending_score") or 0),
-        ],
-    )
+    try:
+        db_exec(
+            """
+            INSERT INTO search_results
+              (keyword, title, url, rating, review_count, price, relevance_score,
+               recent_reviews_30_days, trending_score)
+            VALUES (?, ?, ?, ?, ?, ?, 100.0, ?, ?)
+            ON CONFLICT(keyword, title) DO UPDATE SET
+              url = excluded.url,
+              rating = excluded.rating,
+              review_count = excluded.review_count,
+              price = excluded.price,
+              recent_reviews_30_days = excluded.recent_reviews_30_days,
+              trending_score = excluded.trending_score,
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            [
+                SITEMAP_KEYWORD,
+                title,
+                f"https://apps.shopify.com/{slug}",
+                data.get("rating"),
+                data.get("review_count"),
+                data.get("price"),
+                int(data.get("recent_reviews_30_days") or 0),
+                float(data.get("trending_score") or 0),
+            ],
+        )
+    except Exception as e:
+        # Log-only: catalog progress already committed to apps
+        print(f"⚠ search_results dual-write failed for {slug}: {e}", flush=True)
 
 
 def mark_failed(slug: str, err: str, permanent: bool = False) -> None:
